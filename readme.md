@@ -1,186 +1,115 @@
-# zcauldron
+# Auth system
 
-"z cauldron"
+Setup
 
-The `/lib/auth_v3` is the latest multi-tenant auth system, it's self documented with the open api spec. I'm actively working on a "template" `/lib/app` that talks to the multi-tenant api.
+rename the .example.dev.vars to .dev.vars and add a uuid to the AUTH_KEY field
 
----
+```shell
+# auth with cloudflare
+npx wrangler login
+# opens browser window...
 
-# Table of Contents
+# confrim identity
+npx wrangler whoami
 
-- [Getting Started](#getting-started)
-  - [Project Requirements](#project-requirements)
-  - [Set up locally](#set-up-locally)
-  - [Running the Application](#running-the-application)
-- [Running the Application with Docker](#running-the-application-with-docker)
-  - [Staging with Docker](#staging-with-docker)
-  - [Production with Docker](#production-with-docker)
-- [About the core stack](#about-the-core-stack)
-- [Database Management](#database-management)
-  - [Persistence](#persistence)
-  - [Backup](#backup)
-  - [Restore](#restore)
-  - [List All Backups](#list-all-backups)
-  - [Database Initialization](#database-initialization)
-- [Troubleshooting](#troubleshooting)
+# setup db
+npx wrangler d1 create auth_storage --location wnam
+# https://developers.cloudflare.com/workers/wrangler/commands/#d1-create
 
-## Getting Started
+# run migrations (local)
+npx wrangler d1 migrations apply auth_storage --local
 
-### Project Requirements
+# duplicate example.dev.vars > .dev.vars
+# udpate with your secret values
+# ...
 
-If you plan on running the project locally, you're going to need the following installed on your machine. The versions defined are what I am explicitly running right now, if I had to take a guess in the dark I'd say you're good to run with and version greater than or equal to whats defined below.
+# run dev server
+npm run dev # wrangler dev
 
-- [OpenAI API Key](https://openai.com/index/openai-api/)
-- [Docker](https://www.docker.com/) version 25.0.2
-- [Node.js](https://nodejs.org/en/download/) version 18.0
-- [Go](https://go.dev/) version 1.23.1
-- [SQLite](https://www.sqlite.org/download.html) version 3.43.2
-- [Python](https://www.python.org/downloads/) version 3.12
+# deploy to cloudflare workers
+npm run deploy # wrangler deploy
 
-## Set up locally
+# run migrations in cloudflare
+npx wrangler d1 migrations apply auth_storage --remote
 
-Watch this 5 minute getting started video here: https://www.youtube.com/watch?v=BhJ3JFsOh2g
+# set remote env
+npx wrangler secret put AUTH_KEY
+npx wrangler secret put RESEND_KEY
+npx wrangler secret put NO_REPLY_EMAIL
+npx wrangler secret put NO_REPLY_NAME
+npx wrangler secret put NO_REPLY_PASSWORD
 
-1. **Clone the Repository**
-2. **Environment Configuration**
-   - Duplicate `.env.example` to `.env`
-3. **Generate Base64 Key**
-   - Navigate to `cmd/generate_base64_key` and run:
-     ```sh
-     go run main.go
-     ```
-   - Add the generated key to `SESSION_SECRET_KEY` in `.env`
-4. **Add OpenAI API Key**
-   - Update `.env` with your OpenAI API key
+# confirm
+npx wrangler secret list
 
-### Running the Application
+# drop local db
+npx wrangler d1 execute auth_storage --local --command="DELETE FROM password_history; DELETE FROM verification_tokens; DELETE FROM refresh_tokens; DELETE FROM users;"
 
-1. **Start the Server**
-   - From the root directory, run:
-     ```sh
-     go run main.go
-     ```
-2. **Client Setup**
-   - In a separate terminal, navigate to `routes/` and install dependencies:
-     ```sh
-     npm install
-     ```
-   - Launch the client dev server:
-     ```sh
-     npm run dev
-     ```
-3. **Image Service Setup**
-   - In another terminal, navigate to `/lib/pdf-service` and install dependencies:
-     ```sh
-     python -m venv venv
-     source venv/bin/activate  # On Windows, use: venv\Scripts\activate
-     pip install -r requirements.txt
-     python main.py
-     ```
-   - Tip: If you don't need to change code in this server, you might just run the [Docker image](#build-the-libimage-python-service)
-
-## Running the Application with Docker
-
-The docker version of the application supports multiple environments:
-
-### Staging with Docker
-
-Useful for running observing what the application will look like in production.
-
-```bash
-# Copy example env file
-cp .env.example .env.staging
-# Edit .env.development with your development settings
-docker compose up --build
+# view schema
+npx wrangler d1 execute auth_storage --local --command="
+SELECT sql FROM sqlite_master
+WHERE type IN ('table', 'index')
+AND name NOT LIKE 'sqlite_%'
+ORDER BY type DESC, name;"
 ```
 
-### Production with Docker
+We're using Hono as an HTTP framework, and hosting on Cloudflare workers. First time here? Watch this vid: https://www.youtube.com/watch?v=H7Qe96fqg1M to get up to speed on Cloudflare Workers and Hono.
 
-Secure encryption and proper configuration is required and enforced in this environment.
+## Routes
 
-```bash
-# Copy example env file
-cp .env.example .env.production
-# Edit .env.production with your production settings
-DOCKER_ENV=production docker compose -f docker-compose.yml -f docker-compose.production.yml up --build
-```
+Here's a map of all the routes in this service. Click an endpoint ot quickly jump to the definition
 
-## About the core stack
+| Route Type       | Method | Endpoint                       | Description                              |
+| ---------------- | ------ | ------------------------------ | ---------------------------------------- |
+| Public Routes    | POST   | /v3/public/sign-up             | new user registration returns JWT        |
+|                  | POST   | /v3/public/login               | user login, returns JWT                  |
+|                  | POST   | /v3/public/refresh-token       | refresh access token using refresh token |
+|                  | POST   | /v3/public/forgot-password     | initiate password reset                  |
+|                  | POST   | /v3/public/reset-password      | complete password reset with token       |
+|                  | GET    | /v3/public/verify-email/:token | verify email with token                  |
+|                  | POST   | /v3/public/resend-verification | resend verification email                |
+| Protected Routes | POST   | /v3/auth/logout                | invalidate current token                 |
+|                  | PUT    | /v3/auth/change-password       | change password while logged in          |
+|                  | GET    | /v3/auth/me                    | get current user info                    |
+|                  | PUT    | /v3/auth/me                    | update user info                         |
+|                  | DELETE | /v3/auth/me                    | delete account                           |
+| Admin Routes     | GET    | /v3/admin/users                | list all users                           |
+|                  | GET    | /v3/admin/users/:id            | get specific user                        |
+|                  | PUT    | /v3/admin/users/:id/status     | modify user status (suspend/activate)    |
+|                  | DELETE | /v3/admin/users/:id            | delete user account                      |
 
-Backend
+## Adding a new app
 
-- [Go](https://go.dev/) - Server side programming language
-- [Gin](https://gin-gonic.com/) - HTTP framework
-- [SQLite](https://www.sqlite.org/) - Database that's easy to work with
+- Run the ./scripts/create-app-local.sh script
+- Run the ./scripts/create-app-remote.sh script
+- Configure the origin to your production domain; when you deploy to prod
 
-Client
-
-- [React](https://react.dev/) - Web library
-- [TanStack Router](https://tanstack.com/router) - Web routing system
-- [Vite](https://vite.dev/) - JavaScript build tool
-- [TypeScript](https://www.typescriptlang.org/) - Type safe javascript
-- [TailwindCSS + TailwindUI](https://tailwindui.com) - Prototype friendly component system
-
-PDF Service (Micro Service /lib/pdf-service)
-
-- [Python](https://www.python.org/downloads)
-- [PyMuPDF](https://pymupdf.readthedocs.io/en/latest/)
-
-## Database Management
-
-### Persistence
-
-The database is stored in a Docker named volume that persists between container restarts. Each environment (staging, production) has its own separate volume.
-
-### Backup
-
-To backup the database:
-
-```bash
-# Make scripts executable
-chmod +x scripts/backup.sh
-chmod +x scripts/restore.sh
-
-# Create a backup (defaults to staging environment)
-./scripts/backup.sh [environment]
-
-# Example:
-./scripts/backup.sh production
-```
-
-### Restore
-
-To restore from a backup:
-
-```bash
-./scripts/restore.sh [environment] path/to/backup/file.db
-
-# Example:
-./scripts/restore.sh production ./backups/production/backup_20241201_120000.db
-```
-
-### List All Backups
-
-```bash
-ls -l backups/[environment]/
-```
-
-### Database Initialization
-
-Before running backups, ensure your database is properly initialized:
-
-```bash
-# Start the containers first
-docker compose up -d
-
-# Now you can create your first backup
-./scripts/backup.sh [environment]
-```
-
-## Troubleshooting
+## Refactor to:
 
 ```
-docker compose down
-docker compose build --no-cache
-docker compose up -d
+lib/bus/auth_v3/src/
+├── index.ts                # Main API setup
+├── routes/                 # Route definitions
+│   ├── index.ts
+│   ├── auth.ts
+│   └── public.ts
+├── definitions/           # OpenAPI definitions
+│   ├── index.ts
+│   ├── RouteDefinitionFactory.ts
+│   └── schemas/
+│       ├── index.ts
+│       └── SchemaBuilder.ts
+├── controllers/           # Request handlers
+│   ├── index.ts
+│   ├── auth.ts
+│   └── public.ts
+├── services/             # Business logic
+│   ├── index.ts
+│   └── auth.ts
+└── middleware/           # Custom middleware
+│   ├── index.ts
+│   ├── auth.ts
+│   └── appId.ts
+└── types                 # Type definitions
+    └── index.ts
 ```
